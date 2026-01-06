@@ -6,7 +6,7 @@ Created in 2025
 
 ==========================================================================================================================
 
-REX-C COMPILER DOCUMENTATION
+REX-C V3 COMPILER DOCUMENTATION
 
 ================================================================================
 INTRODUCTION
@@ -60,7 +60,7 @@ IDENT    Identifiants de variables (ex: x, counter, myVar)
 
 
 ================================================================================
-DÉCLARATION ET AFFECTATION DE VARIABLES
+DÉCLARATION ET AFFECTATION DE VARIABLES ET CONSTANTE
 ================================================================================
 
 SET nom_variable valeur
@@ -76,6 +76,15 @@ SET y x           -- y prend la valeur et le type de x
 
 Une variable ne peut pas changer de type après sa déclaration.
 
+
+CST nom_constante valeur
+
+UNE CONSTANTE NE PEUT PAS ETRE MODIFIER
+
+Le type de la constante est inféré automatiquement à partir de la valeur.
+
+Exemple:
+CST constante1 5  -- constante1 est un INT de valeur 5
 
 ================================================================================
 OPÉRATIONS ARITHMÉTIQUES
