@@ -1,0 +1,323 @@
+========================================================== RCS ===========================================================
+
+Tout droits réservés 
+©Romaxolotl - RCS
+Created in 2025
+
+==========================================================================================================================
+
+REX-C COMPILER DOCUMENTATION
+
+================================================================================
+INTRODUCTION
+================================================================================
+
+REX-C est un compilateur pour les langages REX et RED. Ces langages sont des
+langages de bas niveau qui se compilent vers C, puis vers du code machine
+exécutable via GCC.
+
+Le compilateur lit un fichier source .rex ou .red, effectue une analyse
+lexicale et syntaxique, génère du code C intermédiaire, puis compile ce code
+avec GCC pour produire un exécutable.
+
+
+================================================================================
+STRUCTURE D'UN PROGRAMME
+================================================================================
+
+Tout programme REX/RED doit commencer par une ligne de déclaration du mode:
+
+TAG REX
+ou
+TAG RED
+Cette ligne doit être la première instruction du fichier.
+
+Après cette déclaration, vous pouvez écrire vos instructions, une par ligne.
+
+
+================================================================================
+COMMENTAIRES
+================================================================================
+
+Les commentaires commencent par deux tirets et s'étendent jusqu'à la fin de
+la ligne:
+
+-- Ceci est un commentaire
+SET x 42 -- Commentaire en fin de ligne
+
+
+================================================================================
+TYPES DE DONNÉES
+================================================================================
+
+Le langage supporte les types suivants:
+
+INT      Nombres entiers (ex: 42, -10, 0)
+FLOAT    Nombres à virgule flottante (ex: 3.14, -0.5, 2.0)
+BOOL     Booléens (True ou False, stockés comme 0 ou 1)
+STR      Chaînes de caractères entre guillemets (ex: "Hello")
+IDENT    Identifiants de variables (ex: x, counter, myVar)
+
+
+================================================================================
+DÉCLARATION ET AFFECTATION DE VARIABLES
+================================================================================
+
+SET nom_variable valeur
+
+Le type de la variable est inféré automatiquement à partir de la valeur.
+
+Exemples:
+SET x 42          -- x est un INT
+SET pi 3.14       -- pi est un FLOAT
+SET name "Alice"  -- name est un STR
+SET flag True     -- flag est un BOOL
+SET y x           -- y prend la valeur et le type de x
+
+Une variable ne peut pas changer de type après sa déclaration.
+
+
+================================================================================
+OPÉRATIONS ARITHMÉTIQUES
+================================================================================
+
+ADD operande1 operande2 resultat
+SUB operande1 operande2 resultat
+MUL operande1 operande2 resultat
+DIV operande1 operande2 resultat
+MOD operande1 operande2 resultat
+
+Les opérandes peuvent être des nombres littéraux ou des variables.
+Le résultat est stocké dans la variable spécifiée.
+
+Exemples:
+ADD 10 5 sum      -- sum = 15
+SUB x 3 diff      -- diff = x - 3
+MUL 2 pi doubled  -- doubled = 2 * pi
+DIV 10 3 result   -- result = 10 / 3
+MOD 10 3 reste    -- reste = 10 % 3 = 1
+
+Note: MOD ne fonctionne qu'avec des entiers.
+La division par zéro renvoie 0 pour éviter les erreurs.
+
+
+================================================================================
+AFFICHAGE
+================================================================================
+
+SHOW valeur terminaison
+
+Affiche une valeur à l'écran.
+La terminaison spécifie ce qui termine l'affichage (par défaut: saut de ligne).
+
+Exemples:
+SHOW "Hello" "\n"           -- Affiche: Hello (avec saut de ligne)
+SHOW x "\n"                 -- Affiche la valeur de x
+SHOW "Result: " ""          -- Affiche sans saut de ligne
+SHOW 42 "\n"
+
+
+================================================================================
+COMPARAISONS
+================================================================================
+
+CMP operande1 operateur operande2 resultat
+
+Compare deux valeurs et stocke le résultat (1 pour vrai, 0 pour faux) dans
+une variable.
+
+Opérateurs supportés:
+==    Égal à
+!=    Différent de
+<     Inférieur à
+>     Supérieur à
+<=    Inférieur ou égal à
+>=    Supérieur ou égal à
+
+Exemples:
+CMP x == 10 isEqual      -- isEqual vaut 1 si x == 10, sinon 0
+CMP a < b isLess         -- isLess vaut 1 si a < b
+CMP name == "Alice" ok   -- Comparaison de chaînes (seul == supporté)
+
+
+================================================================================
+STRUCTURES DE CONTRÔLE
+================================================================================
+
+Conditions:
+
+IF condition
+  -- instructions si condition vraie
+ELSE
+  -- instructions si condition fausse
+ENDIF
+
+La clause ELSE est optionnelle.
+
+Exemple:
+CMP x > 0 isPositive
+IF isPositive
+  SHOW "x est positif"
+ELSE
+  SHOW "x est négatif ou nul"
+ENDIF
+
+
+Labels et sauts:
+
+LBL nom_label
+  -- code
+
+GO nom_label
+
+Définit un point de saut et permet d'y revenir.
+
+Exemple:
+SET counter 0
+LBL loop
+  SHOW counter
+  ADD counter 1 counter
+  CMP counter < 5 continue
+  IF continue
+    GO loop
+  ENDIF
+
+
+================================================================================
+FONCTIONS
+================================================================================
+
+Définition:
+
+FUNC nom_fonction arg1 arg2 ...
+  -- corps de la fonction
+  RET valeur
+ENDFUNC
+
+Les fonctions peuvent avoir zéro ou plusieurs arguments.
+Le type de retour est inféré automatiquement.
+
+Exemple:
+FUNC add a b
+  ADD a b result
+  RET result
+ENDFUNC
+
+Appel de fonction:
+CALL function arg1 arg2 -> retour
+
+Les fonctions peuvent avoir zéro ou plusieurs arguments.
+la variable de retour prend le type du retour automatique.
+
+Exemple:
+FUNC add a b 
+    ADD a b result
+    RET result
+ENDFUNC
+
+SET n1 2
+SET n2 3
+
+CALL add n1 n2 -> res
+
+================================================================================
+TERMINAISON DU PROGRAMME
+================================================================================
+
+END code_sortie
+
+Termine immédiatement le programme avec le code de sortie spécifié.
+
+Exemple:
+END 0    -- Terminaison normale
+END 1    -- Terminaison avec erreur
+
+
+================================================================================
+UTILISATION DU COMPILATEUR
+================================================================================
+
+Ligne de commande:
+
+Compiler_REX -f fichier.rex [options]
+
+Options:
+-f, --file        Fichier source (obligatoire)
+-o, --output      Nom du fichier de sortie (optionnel)
+-d, --debug       Mode debug avec affichage détaillé
+-s, --silent      Mode silencieux
+-rs, --real-silent Mode silencieux complet
+-kc, --keep-C     Conserver le fichier C intermédiaire
+-r, --run         Exécuter le programme après compilation
+-t, --time        Délai entre chaque étape (en secondes)
+
+Exemples:
+Compiler_REX -f hello.rex
+Compiler_REX -f calc.rex -o calculator -r
+Compiler_REX -f test.rex -d -kc
+
+
+================================================================================
+EXEMPLE COMPLET
+================================================================================
+
+TAG REX
+
+-- Programme de calcul simple
+SET a 10
+SET b 20
+
+ADD a b sum
+SHOW "La somme est: " ""
+SHOW sum
+
+SUB b a diff
+SHOW "La différence est: " ""
+SHOW diff
+
+MUL a b product
+SHOW "Le produit est: " ""
+SHOW product
+
+CMP a < b result
+IF result
+  SHOW "a est plus petit que b"
+ELSE
+  SHOW "a est plus grand ou égal à b"
+ENDIF
+
+END 0
+
+
+================================================================================
+ERREURS COURANTES
+================================================================================
+
+1. Fichier ne commence pas par TAG REX/RED
+   Solution: Ajouter cette ligne en première instruction
+
+2. Variable non définie
+   Solution: Déclarer la variable avec SET avant utilisation
+
+3. Changement de type de variable
+   Solution: Une fois déclarée, une variable garde son type
+
+4. Label non défini
+   Solution: Définir le label avec LBL avant d'y faire référence avec GO
+
+5. Opération MOD sur des FLOAT
+   Solution: MOD ne fonctionne qu'avec des entiers
+
+6. Comparaison de chaînes avec autre chose que ==
+   Solution: Pour les chaînes, seul == est supporté
+
+7. Return en dehors d'une fonction
+   Solution: RET ne peut être utilisé qu'à l'intérieur d'une fonction
+
+8. ENDFUNC sans FUNC correspondant
+   Solution: Chaque FUNC doit avoir son ENDFUNC
+
+
+================================================================================
+FIN DE LA DOCUMENTATION
+================================================================================
