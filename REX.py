@@ -78,24 +78,38 @@ class REXCompiler:
             "//REX-C Compiler",
             "#include <stdio.h>",
             "#include <stdlib.h>",
-            "#include <string.h>",
-            "int main() {"
+            "#include <string.h>"
         ]
         self.variables = {}
         self.labels = {}
+        self.functions = {}
+        self.constants = {}
         self.logger = debug_logger
         self.current_line = 0
-        self.skip_next = False  # Pour gérer le IF
+        self.skip_next = False
+        self.in_function = False
+        self.current_function = None
+        self.function_code = []
+        self.main_code = []
         
     def add_line(self, code):
-        self.c_code.append(code)
+        if self.in_function:
+            self.function_code.append(code)
+        else:
+            self.main_code.append(code)
         
     def finalize(self):
-        self.c_code.append("return 0;}")
-        return "\n".join(self.c_code)
+        # Assembler le code final
+        final_code = self.c_code.copy()
+        final_code.extend(self.function_code)
+        final_code.append("int main() {")
+        final_code.extend(self.main_code)
+        final_code.append("return 0;}")
+        return "\n".join(final_code)
     
     def _check_var_exists(self, var):
-        if var not in self.variables:
+        # CORRECTION: Vérifier aussi dans les constantes
+        if var not in self.variables and var not in self.constants:
             raise CompilerError(f"Variable '{var}' not defined", self.current_line)
     
     def check_label_exists(self):
@@ -109,19 +123,35 @@ class REXCompiler:
                 f"Type mismatch: '{var}' is {self.variables[var]['type']}, expected {expected_type}",
                 self.current_line
             )
+    
+    def _get_c_type(self, tip):
+        """Convert REX type to C type"""
+        type_map = {
+            "INT": "int",
+            "FLOAT": "float",
+            "BOOL": "int",
+            "STR": "char*",
+            "VOID": "void"
+        }
+        return type_map.get(tip, "int")
         
     def op_set(self, var, val, tip):
         """SET operation: Assign value to variable"""
         self.logger.log(f"SET {var} = {val} (type: {tip})", Fore.MAGENTA)
         
-        # If assigning from another variable (IDENT type)
+        # Vérifier si c'est une constante
+        if var in self.constants:
+            raise CompilerError(f"Cannot reassign constant '{var}'", self.current_line)
+        
         if tip == "IDENT":
-            # Check that source variable exists
             self._check_var_exists(val)
-            source_type = self.variables[val]["type"]
+            # Déterminer le type source (variable ou constante)
+            if val in self.constants:
+                source_type = self.constants[val]["type"]
+            else:
+                source_type = self.variables[val]["type"]
             
             if var in self.variables:
-                # Check type compatibility
                 if self.variables[var]["type"] != source_type:
                     raise CompilerError(
                         f"Cannot reassign '{var}' with different type. Declared as {self.variables[var]['type']}, got {source_type}",
@@ -129,115 +159,167 @@ class REXCompiler:
                     )
                 self.add_line(f"{var} = {val};")
             else:
-                # Create new variable with same type as source
                 self.variables[var] = {"type": source_type}
-                if source_type == "INT":
-                    self.add_line(f"int {var} = {val};")
-                else:  # STR
-                    self.add_line(f"char* {var} = {val};")
+                c_type = self._get_c_type(source_type)
+                self.add_line(f"{c_type} {var} = {val};")
         else:
-            # Original logic for literal values
             if var in self.variables:
                 if self.variables[var]["type"] != tip:
                     raise CompilerError(
                         f"Cannot reassign '{var}' with different type. Declared as {self.variables[var]['type']}, got {tip}",
                         self.current_line
                     )
-                if tip == "INT":
-                    self.add_line(f"{var} = {val};")
-                else:  # STR
+                if tip == "STR":
                     self.add_line(f'{var} = "{val}";')
+                else:
+                    self.add_line(f"{var} = {val};")
             else:
                 self.variables[var] = {"type": tip}
-                if tip == "INT":
-                    self.add_line(f"int {var} = {val};")
-                else:  # STR
-                    self.add_line(f'char* {var} = "{val}";')
+                c_type = self._get_c_type(tip)
+                if tip == "STR":
+                    self.add_line(f'{c_type} {var} = "{val}";')
+                else:
+                    self.add_line(f"{c_type} {var} = {val};")
         
         self.logger.success(f"Variable '{var}' set to {val}")
-    def op_add(self, op1, op2, to):
+    
+    def _get_operand_type(self, op, op_type):
+        """Determine the actual type of an operand"""
+        if op_type == "IDENT":
+            self._check_var_exists(op)
+            if op in self.constants:
+                return self.constants[op]["type"]
+            return self.variables[op]["type"]
+        return op_type
+    
+    def _determine_result_type(self, op1, op2, op1_type, op2_type):
+        """Determine result type for arithmetic operations"""
+        actual_type1 = self._get_operand_type(op1, op1_type)
+        actual_type2 = self._get_operand_type(op2, op2_type)
+        
+        if actual_type1 == "STR" or actual_type2 == "STR":
+            raise CompilerError("Cannot perform arithmetic on strings", self.current_line)
+        
+        if actual_type1 == "FLOAT" or actual_type2 == "FLOAT":
+            return "FLOAT"
+        
+        return "INT"
+    
+    def op_add(self, op1, op2, to, op1_type=None, op2_type=None):
         """ADD operation: op1 + op2 -> to"""
         self.logger.log(f"ADD {op1} + {op2} -> {to}", Fore.MAGENTA)
         
-        if to in self.variables:
-            self._check_var_type(to, "INT")
-            self.add_line(f"{to} = {op1} + {op2};")
-        else:
-            self.variables[to] = {"type": "INT"}
-            self.add_line(f"int {to} = {op1} + {op2};")
+        result_type = self._determine_result_type(op1, op2, op1_type or "INT", op2_type or "INT")
         
+        if to not in self.variables:
+            self.variables[to] = {"type": result_type}
+            c_type = self._get_c_type(result_type)
+            to_decl = f"{c_type} {to}"
+        else:
+            to_decl = to
+            
+        self.add_line(f"{to_decl} = {op1} + {op2};")
         self.logger.success(f"Result stored in '{to}'")
     
-    def op_sub(self, op1, op2, to):
+    def op_sub(self, op1, op2, to, op1_type=None, op2_type=None):
         """SUB operation: op1 - op2 -> to"""
         self.logger.log(f"SUB {op1} - {op2} -> {to}", Fore.MAGENTA)
         
-        if to in self.variables:
-            self._check_var_type(to, "INT")
-            self.add_line(f"{to} = {op1} - {op2};")
-        else:
-            self.variables[to] = {"type": "INT"}
-            self.add_line(f"int {to} = {op1} - {op2};")
+        result_type = self._determine_result_type(op1, op2, op1_type or "INT", op2_type or "INT")
         
+        if to not in self.variables:
+            self.variables[to] = {"type": result_type}
+            c_type = self._get_c_type(result_type)
+            to_decl = f"{c_type} {to}"
+        else:
+            to_decl = to
+            
+        self.add_line(f"{to_decl} = {op1} - {op2};")
         self.logger.success(f"Result stored in '{to}'")
     
-    def op_mul(self, op1, op2, to):
+    def op_mul(self, op1, op2, to, op1_type=None, op2_type=None):
         """MUL operation: op1 * op2 -> to"""
         self.logger.log(f"MUL {op1} * {op2} -> {to}", Fore.MAGENTA)
         
-        if to in self.variables:
-            self._check_var_type(to, "INT")
-            self.add_line(f"{to} = {op1} * {op2};")
-        else:
-            self.variables[to] = {"type": "INT"}
-            self.add_line(f"int {to} = {op1} * {op2};")
+        result_type = self._determine_result_type(op1, op2, op1_type or "INT", op2_type or "INT")
         
+        if to not in self.variables:
+            self.variables[to] = {"type": result_type}
+            c_type = self._get_c_type(result_type)
+            to_decl = f"{c_type} {to}"
+        else:
+            to_decl = to
+            
+        self.add_line(f"{to_decl} = {op1} * {op2};")
         self.logger.success(f"Result stored in '{to}'")
     
-    def op_div(self, op1, op2, to):
+    def op_div(self, op1, op2, to, op1_type=None, op2_type=None):
         """DIV operation: op1 / op2 -> to"""
         self.logger.log(f"DIV {op1} / {op2} -> {to}", Fore.MAGENTA)
         
-        if to in self.variables:
-            self._check_var_type(to, "INT")
-            self.add_line(f"{to} = {op1} / {op2};")
+        result_type = self._determine_result_type(op1, op2, op1_type or "INT", op2_type or "INT")
+        
+        if to not in self.variables:
+            self.variables[to] = {"type": result_type}
+            c_type = self._get_c_type(result_type)
+            to_decl = f"{c_type} {to}"
         else:
-            self.variables[to] = {"type": "INT"}
-            self.add_line(f"int {to} = {op2} != 0 ? {op1} / {op2} : 0;")
+            to_decl = to
+        
+        if result_type == "FLOAT":
+            self.add_line(f"{to_decl} = {op2} != 0 ? {op1} / {op2} : 0.0;")
+        else:
+            self.add_line(f"{to_decl} = {op2} != 0 ? {op1} / {op2} : 0;")
         
         self.logger.success(f"Result stored in '{to}'")
     
-    def op_mod(self, op1, op2, to):
-        """MOD operation: op1 % op2 -> to"""
+    def op_mod(self, op1, op2, to, op1_type=None, op2_type=None):
+        """MOD operation: op1 % op2 -> to (integers only)"""
         self.logger.log(f"MOD {op1} % {op2} -> {to}", Fore.MAGENTA)
         
-        if to in self.variables:
-            self._check_var_type(to, "INT")
-            self.add_line(f"{to} = {op1} % {op2};")
-        else:
-            self.variables[to] = {"type": "INT"}
-            self.add_line(f"int {to} = {op1} % {op2};")
+        actual_type1 = self._get_operand_type(op1, op1_type or "INT")
+        actual_type2 = self._get_operand_type(op2, op2_type or "INT")
         
+        if actual_type1 == "FLOAT" or actual_type2 == "FLOAT":
+            raise CompilerError("Modulo operation not supported for FLOAT types", self.current_line)
+        
+        if to not in self.variables:
+            self.variables[to] = {"type": "INT"}
+            to_decl = "int " + to
+        else:
+            to_decl = to
+            
+        self.add_line(f"{to_decl} = {op2} != 0 ? {op1} % {op2} : 0;")
         self.logger.success(f"Result stored in '{to}'")
     
     def op_show(self, op1, tipe, end, tipe_end):
         """SHOW operation: Print value"""
         self.logger.log(f"SHOW {op1} (type: {tipe})", Fore.MAGENTA)
         
+        end_str = end if tipe_end == "STR" else "\\n"
+        
         if tipe == "INT":
-            end_str = end if tipe_end == "STR" else "\\n"
+            self.add_line(f'printf("%d{end_str}", {op1});')
+        elif tipe == "FLOAT":
+            self.add_line(f'printf("%f{end_str}", {op1});')
+        elif tipe == "BOOL":
             self.add_line(f'printf("%d{end_str}", {op1});')
         elif tipe == "STR":
-            end_str = end if tipe_end == "STR" else "\\n"
             self.add_line(f'printf("%s{end_str}", "{op1}");')
         elif tipe == "IDENT":
             self._check_var_exists(op1)
-            var_type = self.variables[op1]["type"]
-            end_str = end if tipe_end == "STR" else "\\n"
             
-            if var_type == "INT":
+            # CORRECTION: Chercher le type dans les variables OU les constantes
+            if op1 in self.constants:
+                var_type = self.constants[op1]["type"]
+            else:
+                var_type = self.variables[op1]["type"]
+            
+            if var_type == "INT" or var_type == "BOOL":
                 self.add_line(f'printf("%d{end_str}", {op1});')
-            else:  # STR
+            elif var_type == "FLOAT":
+                self.add_line(f'printf("%f{end_str}", {op1});')
+            else:
                 self.add_line(f'printf("%s{end_str}", {op1});')
         
         self.logger.success("Output generated")
@@ -245,7 +327,6 @@ class REXCompiler:
     def op_cmp(self, op1, op2, cmp, to, op1t, op2t):
         """CMP operation: Compare op1 and op2, store result in to"""
         self.logger.log(f"CMP {op1} {cmp} {op2} -> {to}", Fore.MAGENTA)
-        t = "INT"
         
         if op1t == "STR":
             op1 = f'"{op1}"'
@@ -262,26 +343,26 @@ class REXCompiler:
 
         if op2t == "STR" and op1t != op2t:
             raise CompilerError("Cannot compare string with non-string", self.current_line)
-        if op1t == "STR" and op2t == "STR":
-            t = "STR"
             
         if to not in self.variables:
             self.variables[to] = {"type": "INT"}
-            to = f"int {to}"
+            to_decl = "int " + to
+        else:
+            to_decl = to
         
         valid_operators = ["==", "!=", "<", ">", "<=", ">="]
         if cmp not in valid_operators:
             raise CompilerError(f"Invalid comparison operator '{cmp}'", self.current_line)
         
-        if t == "INT":
-            self.add_line(f"{to} = {op1} {cmp} {op2};")
-        else: 
+        if op1t == "STR" and op2t == "STR":
             if cmp != "==":
-                raise CompilerError("Invalid comparison operator for strings", self.current_line)
-            self.add_line(f"{to} = strcmp({op1}, {op2}) == 0;")
+                raise CompilerError("Only == comparison supported for strings", self.current_line)
+            self.add_line(f"{to_decl} = strcmp({op1}, {op2}) == 0;")
+        else:
+            self.add_line(f"{to_decl} = {op1} {cmp} {op2};")
         
         self.logger.success(f"Comparison result stored in '{to}'")
-    
+        
     def op_if(self, condition):
         """IF operation: Conditional execution"""
         self.logger.log(f"IF {condition}", Fore.MAGENTA)
@@ -304,6 +385,7 @@ class REXCompiler:
     
     def op_label(self, name):
         """LABEL operation: Define label"""
+        name = f"Label_{name}"
         self.logger.log(f"LABEL {name}", Fore.MAGENTA)
         self.add_line(f"{name}:")
         self.labels[name] = True
@@ -311,14 +393,254 @@ class REXCompiler:
         
     def op_go(self, to):
         """GOTO operation: Jump to label"""
+        to = f"Label_{to}"
         self.logger.log(f"GOTO {to}", Fore.MAGENTA)
         self.add_line(f"goto {to};")
-        if to not in self.labels: self.labels[to] = False
+        if to not in self.labels:
+            self.labels[to] = False
         self.logger.success(f"Jump to label '{to}'")
         
     def op_end(self, cdn):
+        """END operation: Exit program"""
         self.logger.log("END", Fore.MAGENTA)
-        self.add_line(f"exit({cdn});")        
+        self.add_line(f"exit({cdn});")
+
+    def op_func(self, name, *args):
+        """FUNC operation: Define function"""
+        self.logger.log(f"FUNC {name} with args: {args}", Fore.MAGENTA)
+        
+        func_name = f"Func_{name}"
+        # Remove the duplicate check - pass_one already validates this
+        # if func_name in self.functions:
+        #     raise CompilerError(f"Function '{name}' already defined", self.current_line)
+        
+        self.in_function = True
+        self.current_function = func_name
+        
+        # Initialize function metadata if not already present
+        if func_name not in self.functions:
+            self.functions[func_name] = {"type": "VOID", "args": []}
+        
+        # Préparer les arguments
+        arg_list = []
+        for arg in args:
+            arg_name = list(arg.values())[0]
+            # Type par défaut pour les arguments
+            arg_list.append(f"int {arg_name}")
+            self.variables[arg_name] = {"type": "INT"}
+            self.functions[func_name]["args"].append(arg_name)
+        
+        args_str = ", ".join(arg_list) if arg_list else "void"
+        
+        # On ne connaît pas encore le type de retour, on utilisera void par défaut
+        self.add_line(f"void {func_name}({args_str}) {{")
+        self.logger.success(f"Function '{name}' opened")
+    
+    def op_ret(self, value, value_type):
+        """RET operation: Return from function"""
+        self.logger.log(f"RET {value} (type: {value_type})", Fore.MAGENTA)
+        
+        if not self.in_function:
+            raise CompilerError("Return outside function", self.current_line)
+        
+        # Déterminer le type de retour
+        if value_type == "IDENT":
+            self._check_var_exists(value)
+            ret_type = self.variables[value]["type"]
+        else:
+            ret_type = value_type
+        
+        # Mettre à jour le type de la fonction
+        if self.functions[self.current_function]["type"] == "VOID":
+            self.functions[self.current_function]["type"] = ret_type
+        elif self.functions[self.current_function]["type"] != ret_type:
+            raise CompilerError(
+                f"Return type mismatch in function '{self.current_function}'. "
+                f"Expected {self.functions[self.current_function]['type']}, got {ret_type}",
+                self.current_line
+            )
+        
+        if value_type == "STR":
+            self.add_line(f'return "{value}";')
+        else:
+            self.add_line(f"return {value};")
+        
+        self.logger.success("Return statement added")
+    
+    def op_endfunc(self):
+        """ENDFUNC operation: Close function definition"""
+        self.logger.log("ENDFUNC", Fore.MAGENTA)
+        
+        if not self.in_function:
+            raise CompilerError("ENDFUNC outside function", self.current_line)
+        
+        self.add_line("}")
+        
+        # Corriger la signature de la fonction avec le bon type de retour
+        func_type = self.functions[self.current_function]["type"]
+        c_type = self._get_c_type(func_type)
+        
+        # Trouver et remplacer la déclaration de fonction
+        for i, line in enumerate(self.function_code):
+            if f"void {self.current_function}(" in line:
+                self.function_code[i] = line.replace("void", c_type, 1)
+                break
+        
+        self.in_function = False
+        self.current_function = None
+        self.logger.success("Function closed")
+        
+    def op_call(self, func_name, args, result_var=None):
+        """CALL operation: Call a function"""
+        self.logger.log(f"CALL {func_name} with {len(args)} args", Fore.MAGENTA)
+        
+        # 1. Vérifier que la fonction existe
+        full_func_name = f"Func_{func_name}"
+        if full_func_name not in self.functions:
+            raise CompilerError(
+                f"Function '{func_name}' not defined", 
+                self.current_line
+            )
+        
+        # 2. Vérifier le nombre d'arguments
+        expected_args = len(self.functions[full_func_name]["args"])
+        if len(args) != expected_args:
+            raise CompilerError(
+                f"Function '{func_name}' expects {expected_args} arguments, got {len(args)}",
+                self.current_line
+            )
+        
+        # 3. Préparer les arguments pour l'appel C
+        c_args = []
+        for arg in args:
+            arg_value = list(arg.values())[0]
+            arg_type = list(arg.keys())[0]
+            
+            # Si c'est une chaîne littérale, ajouter les guillemets
+            if arg_type == "STR":
+                c_args.append(f'"{arg_value}"')
+            # Si c'est une variable, vérifier qu'elle existe
+            elif arg_type == "IDENT":
+                self._check_var_exists(arg_value)
+                c_args.append(arg_value)
+            # Sinon, utiliser la valeur directement
+            else:
+                c_args.append(str(arg_value))
+        
+        args_str = ", ".join(c_args)
+        
+        # 4. Générer l'appel de fonction
+        func_return_type = self.functions[full_func_name]["type"]
+        
+        # Si la fonction retourne void (ne retourne rien)
+        if func_return_type == "VOID":
+            if result_var:
+                raise CompilerError(
+                    f"Function '{func_name}' does not return a value",
+                    self.current_line
+                )
+            self.add_line(f"{full_func_name}({args_str});")
+        
+        # Si la fonction retourne une valeur
+        else:
+            if not result_var:
+                # Appel sans récupération du résultat (warning optionnel)
+                self.add_line(f"{full_func_name}({args_str});")
+            else:
+                # Créer ou réutiliser la variable de résultat
+                if result_var not in self.variables:
+                    self.variables[result_var] = {"type": func_return_type}
+                    c_type = self._get_c_type(func_return_type)
+                    self.add_line(f"{c_type} {result_var} = {full_func_name}({args_str});")
+                else:
+                    # Vérifier la compatibilité des types
+                    if self.variables[result_var]["type"] != func_return_type:
+                        raise CompilerError(
+                            f"Type mismatch: variable '{result_var}' is {self.variables[result_var]['type']}, "
+                            f"but function returns {func_return_type}",
+                            self.current_line
+                        )
+                    self.add_line(f"{result_var} = {full_func_name}({args_str});")
+        
+        self.logger.success(f"Function call to '{func_name}' generated")
+
+    def op_cst(self, cst, val, tip):
+        """CST operation: Define a constant"""
+        self.logger.log(f"CONST {cst} = {val} (type: {tip})", Fore.MAGENTA)
+        
+        # Vérifier si la constante existe déjà
+        if cst in self.constants:
+            raise CompilerError(f"Constant '{cst}' already defined", self.current_line)
+        
+        # CORRECTION: Vérifier aussi dans les variables
+        if cst in self.variables:
+            raise CompilerError(f"'{cst}' already declared as variable", self.current_line)
+        
+        # Enregistrer la constante
+        self.constants[cst] = {"type": tip, "value": val}
+        
+        # Générer le code C
+        c_type = self._get_c_type(tip)
+        if tip == "STR":
+            self.add_line(f'const {c_type} {cst} = "{val}";')
+        else:
+            self.add_line(f'const {c_type} {cst} = {val};')
+        
+        self.logger.success(f"Constant '{cst}' defined")
+    
+    def pass_one(self, lex_lines):
+        """First pass: collect labels and function declarations"""
+        self.logger.info("Starting pass one...")
+        
+        func_stack = []
+        
+        for line_num, tokens in lex_lines:
+            if not tokens:
+                continue
+                
+            op = list(tokens[0].values())[0]
+            
+            if op == "LBL":
+                label_name = f"Label_{tokens[1]['IDENT']}"
+                if label_name in self.labels and self.labels[label_name] == True:
+                    raise CompilerError(f"Label '{tokens[1]['IDENT']}' already defined", line_num)
+                self.labels[label_name] = True
+                
+            elif op == "GO":
+                label_name = f"Label_{tokens[1]['IDENT']}"
+                if label_name not in self.labels:
+                    self.labels[label_name] = False
+                    
+            elif op == "FUNC":
+                func_name = f"Func_{tokens[1]['IDENT']}"
+                if func_name in self.functions:
+                    raise CompilerError(f"Function '{tokens[1]['IDENT']}' already defined", line_num)
+                self.functions[func_name] = {"type": "VOID", "args": []}
+                func_stack.append(func_name)
+                
+            elif op == "RET":
+                if not func_stack:
+                    raise CompilerError("Return outside function", line_num)
+                    
+            elif op == "ENDFUNC":
+                if not func_stack:
+                    raise CompilerError("ENDFUNC without matching FUNC", line_num)
+                func_stack.pop()
+                
+            elif op == "CALL":
+                func_name = f"Func_{tokens[1]['IDENT']}"
+                # On ne fait rien ici, la validation sera faite en pass 2
+                # Mais on pourrait vérifier que la fonction existe
+        
+        if func_stack:
+            raise CompilerError(f"Unclosed function: {func_stack[-1]}")
+        
+        # Vérifier que tous les labels référencés sont définis
+        for label, defined in self.labels.items():
+            if not defined:
+                raise CompilerError(f"Label '{label}' referenced but not defined")
+        
+        self.logger.success("Pass one completed")
 
     def compile(self, tokens):
         """Main compilation dispatcher"""
@@ -340,31 +662,41 @@ class REXCompiler:
                 op1 = list(tokens[1].values())[0]
                 op2 = list(tokens[2].values())[0]
                 to = list(tokens[3].values())[0]
-                self.op_add(op1, op2, to)
+                op1_type = list(tokens[1].keys())[0]
+                op2_type = list(tokens[2].keys())[0]
+                self.op_add(op1, op2, to, op1_type, op2_type)
                 
             elif op == "SUB":
                 op1 = list(tokens[1].values())[0]
                 op2 = list(tokens[2].values())[0]
                 to = list(tokens[3].values())[0]
-                self.op_sub(op1, op2, to)
+                op1_type = list(tokens[1].keys())[0]
+                op2_type = list(tokens[2].keys())[0]
+                self.op_sub(op1, op2, to, op1_type, op2_type)
                 
             elif op == "MUL":
                 op1 = list(tokens[1].values())[0]
                 op2 = list(tokens[2].values())[0]
                 to = list(tokens[3].values())[0]
-                self.op_mul(op1, op2, to)
+                op1_type = list(tokens[1].keys())[0]
+                op2_type = list(tokens[2].keys())[0]
+                self.op_mul(op1, op2, to, op1_type, op2_type)
                 
             elif op == "DIV":
                 op1 = list(tokens[1].values())[0]
                 op2 = list(tokens[2].values())[0]
                 to = list(tokens[3].values())[0]
-                self.op_div(op1, op2, to)
+                op1_type = list(tokens[1].keys())[0]
+                op2_type = list(tokens[2].keys())[0]
+                self.op_div(op1, op2, to, op1_type, op2_type)
                 
             elif op == "MOD":
                 op1 = list(tokens[1].values())[0]
                 op2 = list(tokens[2].values())[0]
                 to = list(tokens[3].values())[0]
-                self.op_mod(op1, op2, to)
+                op1_type = list(tokens[1].keys())[0]
+                op2_type = list(tokens[2].keys())[0]
+                self.op_mod(op1, op2, to, op1_type, op2_type)
                 
             elif op == "SHOW":
                 try:
@@ -378,8 +710,8 @@ class REXCompiler:
                 
             elif op == "CMP":
                 op1 = list(tokens[1].values())[0]
-                op2 = list(tokens[3].values())[0]
                 operator = list(tokens[2].values())[0]
+                op2 = list(tokens[3].values())[0]
                 to = list(tokens[4].values())[0]
                 op1t = list(tokens[1].keys())[0]
                 op2t = list(tokens[3].keys())[0]
@@ -399,8 +731,6 @@ class REXCompiler:
                 name = list(tokens[1].values())[0]
                 if list(tokens[1].keys())[0] != "IDENT":
                     raise CompilerError(f"Invalid label name '{name}'", self.current_line)
-                if name in self.labels and self.labels[name] == True:
-                    raise CompilerError(f"Label '{name}' already defined", self.current_line)
                 self.op_label(name)
             
             elif op == "GO":
@@ -411,10 +741,82 @@ class REXCompiler:
                 
             elif op == "END":
                 cdn = list(tokens[1].values())[0]
-                if list(tokens[1].keys())[0] != "INT":
+                if list(tokens[1].keys())[0] not in ["INT", "BOOL"]:
                     raise CompilerError(f"Invalid condition '{cdn}'", self.current_line)
                 self.op_end(cdn)
                 
+            elif op == "FUNC":
+                name = list(tokens[1].values())[0]
+                if list(tokens[1].keys())[0] != "IDENT":
+                    raise CompilerError(f"Invalid function name '{name}'", self.current_line)
+                for arg in tokens[2:]:
+                    if list(arg.keys())[0] != "IDENT":
+                        raise CompilerError(f"Invalid argument name '{arg}'", self.current_line)
+                self.op_func(name, *tokens[2:])
+                
+            elif op == "RET":
+                value = list(tokens[1].values())[0]
+                value_type = list(tokens[1].keys())[0]
+                self.op_ret(value, value_type)
+                
+            elif op == "ENDFUNC":
+                self.op_endfunc()
+                
+            elif op == "CALL":
+                # Extraire le nom de la fonction
+                if len(tokens) < 2:
+                    raise CompilerError("CALL requires a function name", self.current_line)
+                
+                func_name = list(tokens[1].values())[0]
+                if list(tokens[1].keys())[0] != "IDENT":
+                    raise CompilerError(f"Invalid function name '{func_name}'", self.current_line)
+                
+                # Chercher "->" dans les tokens
+                arrow_index = None
+                for i in range(2, len(tokens)):
+                    token_key = list(tokens[i].keys())[0]
+                    token_val = list(tokens[i].values())[0]
+                    
+                    # Détecter "->" (peut être IDENT ou OPERATOR selon le lexer)
+                    if (token_key == "IDENT" and token_val == "->") or \
+                    (token_key == "OPERATOR" and token_val == "->"):
+                        arrow_index = i
+                        break
+                
+                # Extraire arguments et variable de résultat
+                if arrow_index is not None:
+                    # Il y a un "->"
+                    args = tokens[2:arrow_index]  # Arguments avant la flèche
+                    
+                    # Variable de résultat après la flèche
+                    if arrow_index + 1 >= len(tokens):
+                        raise CompilerError("Expected variable name after '->'", self.current_line)
+                    
+                    result_var = list(tokens[arrow_index + 1].values())[0]
+                    
+                    if list(tokens[arrow_index + 1].keys())[0] != "IDENT":
+                        raise CompilerError(f"Invalid result variable name '{result_var}'", self.current_line)
+                else:
+                    # Pas de "->"
+                    args = tokens[2:]
+                    result_var = None
+                
+                self.op_call(func_name, args, result_var)
+            
+            elif op == "CST":
+                # CORRECTION: Gérer correctement les tokens
+                if len(tokens) < 3:
+                    raise CompilerError("CST requires name and value", self.current_line)
+                
+                cst_token = tokens[1]
+                if "IDENT" not in cst_token:
+                    raise CompilerError("CST name must be an identifier", self.current_line)
+                
+                cst = cst_token["IDENT"]
+                val = list(tokens[2].values())[0]
+                tip = list(tokens[2].keys())[0]
+                self.op_cst(cst, val, tip)
+            
             else:
                 raise CompilerError(f"Unknown opcode '{op}'", self.current_line)
                 
@@ -438,6 +840,9 @@ def MLX(line):
     in_quote = False
     quote_char = None
 
+    # Opérateurs à reconnaître (AJOUT DE ->)
+    operators = ['->', '==', '!=', '<=', '>=', '<', '>']  # <- ICI
+
     def flush_buf(as_quoted=False):
         nonlocal buf
         if not buf and not as_quoted:
@@ -447,12 +852,10 @@ def MLX(line):
         if as_quoted:
             tokens.append({"STR": tok})
         else:
-            # Gestion des booléens
             if tok == "True":
                 tokens.append({"BOOL": 1})
             elif tok == "False":
                 tokens.append({"BOOL": 0})
-            # Gestion des nombres (int et float)
             elif tok.lstrip('+-').replace('.', '', 1).isdigit() and tok not in ('+', '-', '.'):
                 if '.' in tok:
                     tokens.append({"FLOAT": float(tok)})
@@ -492,6 +895,20 @@ def MLX(line):
             buf.append(ch)
             i += 1
             continue
+
+        # Vérifier les opérateurs multi-caractères
+        if not in_quote:
+            found_op = False
+            for op in operators:
+                if line[i:i+len(op)] == op:
+                    if buf:
+                        flush_buf(False)
+                    tokens.append({"OPERATOR": op})
+                    i += len(op)
+                    found_op = True
+                    break
+            if found_op:
+                continue
 
         if ch.isspace():
             if buf:
@@ -556,14 +973,22 @@ def main():
         logger.success(f"Mode: {Tag}")
         print(f"{Fore.CYAN}╔══════════════════════════════╗{Style.RESET_ALL}")
         print(f"{Fore.CYAN}║   REX-C Compiler - {Tag} Mode  ║{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}╚══════════════════════════════╝{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}╚══════════════════════════════╝\n\n{Style.RESET_ALL}")
         
         non_empty = sum(1 for _, tokens in Lex[1:] if tokens)
         if non_empty == 0:
             non_empty = 1
-        p = ProgBar(non_empty, args.real_silent)
-        
+            
         logger.info("Starting compilation...")
+        
+        logger.info("Pass 1...")
+        
+        compiler.pass_one(Lex[1:])
+        
+        logger.info("\n\nNow compiling...\n")
+        
+        p2 = ProgBar(non_empty, args.real_silent)
+            
         for line_num, tokens in Lex[1:]:
             if not tokens:
                 continue
@@ -576,13 +1001,13 @@ def main():
             time.sleep(args.time)
             
             if not args.debug and not args.real_silent:
-                p.increment()
-                p.show()
+                p2.increment()
+                p2.show()
                 
         compiler.check_label_exists()
         
         if not args.debug and not args.real_silent:
-            p.show(force=True)
+            p2.show(force=True)
             print()
             
         output_name = args.output or (
